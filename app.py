@@ -1,57 +1,69 @@
 import uvicorn
-from fastapi import FastAPI, HTTPException, Form
-
-from models.point import Point
+from fastapi import FastAPI, HTTPException
+from models.passenger import Passenger
 from libs.model import predict, train
-
 from pathlib import Path
-
-from typing import Annotated
-
+import pandas as pd
 
 BASE_DIR = Path(__file__).resolve(strict=True).parent
-MODEL_DIR = Path(BASE_DIR).joinpath('models')
-DATA_DIR = Path(BASE_DIR).joinpath('data')
-MODEL_ML_DIR = Path(BASE_DIR).joinpath('ml_models')
+DATA_DIR = BASE_DIR / 'data'
+MODEL_ML_DIR = BASE_DIR / 'ml_models'
 
 app = FastAPI()
 
 @app.get("/", tags=["intro"])
 async def index():
-    return {"message": "Linear regression model API"}
-
-@app.post("/model/point", tags=["data"], response_model=Point, status_code=200)
-async def point(x: Annotated[int, Form()], y: Annotated[float, Form()]):
-    return Point(x=x, y=y)
+    return {"message": "Titanic Survival Prediction API"}
 
 @app.post("/model/train", tags=["model"], status_code=200)
-async def train_model(data: Point, data_name="10_points", model_name="linear_model"):
-    data_file = Path(DATA_DIR).joinpath(f"{data_name}.csv")
-    model_file = Path(MODEL_ML_DIR).joinpath(f"{model_name}.pkl")
-    
-    data = data.model_dump()
-    x = data['x']
-    y = data['y']
-     
-    train(x,y,model_file)
-    
-    response_object = {"model_fit": "success", "model_save": "success"}
-    return response_object
+async def train_model(data_name="DSP_6", model_name="logistic_model"):
+    data_file = DATA_DIR / f"{data_name}.csv"
+    model_file = MODEL_ML_DIR / f"{model_name}.pkl"
+
+    if not data_file.exists():
+        raise HTTPException(status_code=404, detail="Training data not found")
+
+    df = pd.read_csv(data_file)
+
+    df['Age'].fillna(df['Age'].mean(), inplace=True)
+    df.drop(columns=['Cabin'], inplace=True)
+    df.dropna(inplace=True)
+
+    df = pd.get_dummies(df, columns=['Sex', 'Embarked'], drop_first=True)
+
+    df.drop(['PassengerId', 'Name', 'Ticket'], axis=1, inplace=True)
+
+    X = df.drop('Survived', axis=1)
+    y = df['Survived']
+
+    train(X, y, model_file)
+    return {"model_fit": "success", "model_save": "success"}
 
 @app.post("/model/predict", tags=["model"], status_code=200)
-async def get_predictions(data:Point, model_name="linear_model"):
-    model_file = Path(MODEL_ML_DIR).joinpath(f"{model_name}.pkl")
+async def get_predictions(passenger: Passenger, model_name="logistic_model"):
+    model_file = MODEL_ML_DIR / f"{model_name}.pkl"
     if not model_file.exists():
         raise HTTPException(status_code=404, detail="Model not found")
-    
-    data = data.model_dump()
-    x = data['x']
-    
-    y_pred = predict(x=x, ml_model=model_file)
-    data['y'] = y_pred
-    
-    response_object = {"x": x, "y": y_pred[0][0]}
-    return response_object
+
+    data = passenger.dict()
+    df = pd.DataFrame([data])
+
+    df['Age'].fillna(df['Age'].mean(), inplace=True)
+    if 'Cabin' in df.columns:
+        df.drop(columns=['Cabin'], inplace=True)
+    df.dropna(inplace=True)
+
+    df = pd.get_dummies(df, columns=['Sex', 'Embarked'], drop_first=True)
+
+    expected_cols = ['Pclass', 'Age', 'SibSp', 'Parch', 'Fare', 'Sex_male', 'Embarked_Q', 'Embarked_S']
+    for col in expected_cols:
+        if col not in df.columns:
+            df[col] = 0
+
+    df = df[expected_cols]
+
+    y_pred = predict(df, ml_model=model_file)
+    return {"prediction": int(y_pred[0])}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8008)
